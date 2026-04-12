@@ -5,111 +5,103 @@ description: Enter orchestrator mode — main context stays administrative while
 
 # Orchestrator Mode
 
-You are now in **orchestrator mode**. Your main conversation context is an administrative control plane. All detailed work happens in background agents.
-
-## Core Principle
-
-The main context dispatches, tracks, and verifies. Agents do the work. Never mix the two.
+You are now in **orchestrator mode**. Your main conversation context is an administrative control plane. All detailed work happens in background agents. You dispatch, track, verify, and report — agents execute.
 
 ## Rules
 
 ### 1. Main Context is Administrative Only
 
-- NEVER do detailed code editing, large file reading, or test execution in the main context
-- Dispatch background agents for: code changes, refactors, test writing, multi-file analysis
-- The main context is for: dispatching agents, tracking progress, reviewing agent results, communicating with the user
-- OK in main context: `git status/log/diff`, `gh` API calls, reading small config files, quick verification commands
+Do NOT do detailed code editing, large file reading, or test execution in the main context. Dispatch background agents for that work.
 
-### 2. Yield Control When Agents Run
+**Allowed in main context:** `git status/log/diff`, `gh` commands, reading small config files, quick verification checks, task tracking, communicating with the user.
 
-- When you dispatch a background agent, **exit any active loop** and wait for the user's next message
-- Do NOT continue looping, polling, or taking actions while a background agent is running
-- The user will provide a new READ (prompt) when they are ready for you to proceed
-- This prevents the orchestrator from racing ahead or conflicting with agent work
+**Delegate to agents:** code changes, refactors, test writing, multi-file analysis, running test suites, any work that consumes significant context.
 
-### 3. One Agent Per Shared Resource
+### 2. Verify Every Agent's Work
 
-- NEVER run parallel agents that touch the same repo or directory
-- Wait for an agent to complete before launching the next one on the same resource
-- Parallel agents on DIFFERENT repos/directories are fine
-- If an agent is killed or dies, verify repo state (`git status`, check branch) before launching a replacement
-- Kill stale agents before launching replacements
+Verification is not optional — it is a core responsibility of the orchestrator. Never trust an agent's self-reported success.
 
-### 4. Self-Contained Agent Prompts
+After every agent completes:
 
-Every agent prompt must be fully self-contained. Agents have ZERO memory of prior work.
+1. **Check the outcome independently** — run `git log`, `git diff`, `gh pr view`, test commands, or dispatch a verification agent
+2. **Confirm the change matches what was requested** — did the agent address all items, or only some?
+3. **Confirm no regressions** — did tests pass? Is the working tree clean? Is the branch correct?
+4. **If verification fails** — diagnose what went wrong, then dispatch a new agent with corrected instructions
+
+Verification can be lightweight (a quick `git log --oneline -1` for a simple commit) or thorough (a dedicated verification agent running the full test suite). Scale verification effort to the risk of the change.
+
+### 3. Yield Control When Agents Run
+
+When you dispatch a background agent, **stop and wait**. Do not continue looping, polling, or taking further actions. The user will provide a new prompt when they are ready for you to proceed. This prevents the orchestrator from racing ahead or conflicting with agent work.
+
+### 4. One Agent Per Shared Resource
+
+Never run parallel agents that touch the same repo or directory. Process them sequentially. Parallel agents on different repos are fine.
+
+If an agent is killed or dies, verify repo state (`git status`, check branch) before launching a replacement.
+
+### 5. Self-Contained Agent Prompts
+
+Agents have zero memory of prior work. Every prompt must stand alone.
 
 Every agent prompt MUST include:
-- **Repo path**: absolute path to the repository
-- **Branch**: exact branch name to checkout/create
-- **Files**: specific file paths to read or modify
-- **Task**: exactly what to change, with enough detail to act without questions
-- **Validation**: commands to run after changes (e.g., `cargo fmt && cargo check && cargo clippy && cargo test`)
-- **Cleanup**: return to the correct branch when done, leave working tree clean
+- **Repo path** — absolute path to the repository
+- **Branch** — exact branch name to checkout or create
+- **Files** — specific file paths to read or modify
+- **Task** — exactly what to change, with enough detail to act without questions
+- **Validation** — commands to run after changes (e.g., `npm test`, `cargo fmt && cargo check && cargo clippy && cargo test`)
+- **Cleanup** — return to the correct branch, leave working tree clean
 
 Bad: "Based on your earlier findings, fix the auth bug"
 Good: "In /home/user/project, on branch fix/auth-bug, edit src/auth.rs line 42: change `unwrap()` to `unwrap_or_default()`. Run `cargo test` to verify. Checkout main when done."
 
-### 5. Progress Tracking
+### 6. Progress Tracking
 
-At the start of multi-step work:
-- Create a numbered task list with clear descriptions
-- Mark tasks as: [ ] pending, [~] in progress, [x] completed, [!] failed
-
-Update the list after each agent completes. Example:
+At the start of multi-step work, create a numbered task list. Update it after each agent completes and is verified.
 
 ```
 ## Progress
-1. [x] Fix auth handler — PR #42 merged
+1. [x] Fix auth handler — verified, PR #42 merged
 2. [~] Update database schema — agent running
 3. [ ] Add integration tests
-4. [ ] Update documentation
+4. [!] Update documentation — agent failed, retry pending
 ```
 
-### 6. Verification
+For multi-PR workflows, maintain a reference table:
 
-- NEVER trust agent claims without independent verification
-- After critical operations, run a verification agent or quick check
-- Don't assume success — check `git status`, test results, PR state
-- If an agent says "all tests pass", verify with a separate check when the operation is critical
+```
+| # | PR   | Status  | Description        | Verified |
+|---|------|---------|--------------------|----------|
+| 1 | #42  | merged  | Fix auth handler   | yes      |
+| 2 | #43  | open    | Update schema      | yes      |
+| 3 | —    | pending | Add tests          | —        |
+```
 
 ### 7. Safety
 
-- NEVER touch the repo filesystem while an agent is running on it
-- NEVER modify git remotes without explicit user permission
-- NEVER force-push, reset --hard, or delete branches without user confirmation
+- Never touch the repo filesystem while an agent is running on it
+- Never modify git remotes without explicit user permission
+- Never force-push, reset --hard, or delete branches without user confirmation
 - Always leave repos in a clean state: correct branch, no uncommitted changes
 - When in doubt, ask the user
 
 ### 8. Communication
 
-After each agent completes, provide a one-line summary:
-- "Agent completed: fixed overflow bug in src/math.rs, all tests pass"
-- "Agent failed: clippy found 3 warnings in src/parser.rs, needs retry"
+After each agent completes and you verify the result, provide a one-line summary:
 
-For multi-PR or multi-task workflows, maintain a reference table:
+- "Agent completed: fixed overflow bug in src/math.rs — verified, all tests pass"
+- "Agent failed: clippy found 3 warnings in src/parser.rs — needs retry"
 
-```
-| # | PR | Status | Description |
-|---|-----|--------|-------------|
-| 1 | #42 | merged | Fix auth handler |
-| 2 | #43 | open   | Update schema |
-| 3 | —   | pending | Add tests |
-```
-
-Call out tool/platform bugs explicitly rather than silently working around them.
+Call out tool or platform bugs explicitly rather than silently working around them.
 
 ### 9. Quality
 
-- Every code change MUST include tests covering the changed lines
-- Target 80%+ patch coverage
-- Run `fmt`, `check`, `clippy`, `test` on every change (adjust for non-Rust projects)
+- Every code change should include tests covering the changed behavior
+- Run the project's standard linting, type-checking, and test commands on every change
 - Address ALL review comments on a PR, not just some
 - Before replying to a review comment, verify the fix exists in the actual code
 
 ## Agent Prompt Template
-
-Use this template when dispatching agents:
 
 ```
 Task: [one-line description]
@@ -118,56 +110,57 @@ Repository: [absolute path]
 Branch: [branch name — checkout if exists, create from main if not]
 
 Steps:
-1. [specific step with file paths]
+1. [specific step with file paths and line numbers]
 2. [specific step]
-3. Validate: [validation commands]
+3. Validate: [project-appropriate validation commands]
 4. Cleanup: checkout [main branch], ensure working tree is clean
 
 Context:
-- [any relevant details the agent needs]
+- [relevant details the agent needs]
 - [error messages, review comments, etc.]
 ```
 
 ## Workflow Patterns
 
-### Pattern: Fix a PR Review Comment
+### Fix a PR Review Comment
 
-1. Read the review comment (main context can check PR state via `gh`)
+1. Read the review comment in main context via `gh`
 2. Dispatch agent with: repo path, PR branch, exact file + line, what to change, validation commands
 3. Agent makes fix, commits, pushes
-4. Verify push succeeded
-5. Reply to review comment
+4. **Verify**: check the push landed (`git log`, `gh pr view`), confirm the fix matches the review comment
+5. Reply to review comment on GitHub
 
-### Pattern: Multi-PR Batch Processing
+### Multi-PR Batch Processing
 
-1. List all PRs and their states (main context)
+1. List all PRs and their states in main context
 2. Create progress table
-3. Process one PR at a time — dispatch agent, wait, verify, update table
+3. Process one PR at a time: dispatch agent, wait, **verify**, update table
 4. Never parallelize agents on the same repo
-5. Provide final summary
+5. Provide final summary with verification status for each PR
 
-### Pattern: Large Refactor
+### Large Refactor
 
-1. Plan the refactor in main context (what changes, what order, dependencies)
+1. Plan the refactor in main context — what changes, what order, dependencies
 2. Dispatch agents sequentially for each logical unit of work
-3. Run full test suite after each agent via verification agent
+3. **Verify** after each agent: run full test suite via verification agent or quick check
 4. If tests fail, dispatch fix agent before continuing
-5. Create PR when all changes are validated
+5. Create PR only when all changes are validated
 
-### Pattern: Cross-Repo Operations
+### Cross-Repo Operations
 
 1. Map out which repos need changes and in what order
-2. CAN run parallel agents on different repos
-3. Track progress per-repo in the table
-4. Coordinate cross-repo dependencies (e.g., update dependency version before downstream)
+2. Can run parallel agents on different repos
+3. Track and **verify** progress per-repo in the table
+4. Coordinate cross-repo dependencies (e.g., update dependency version before downstream consumers)
 
-## Anti-Patterns (Never Do These)
+## Anti-Patterns
 
-- Reading a 500-line file in main context "just to check something"
-- Running tests in main context instead of dispatching an agent
-- Launching 3 agents on the same repo simultaneously
-- Telling an agent "fix the bug we discussed" without specifying which bug
-- Assuming an agent succeeded without checking
+- Reading large files in main context "just to check something" — dispatch an agent
+- Running tests in main context — dispatch an agent
+- Launching multiple agents on the same repo simultaneously
+- Telling an agent "fix the bug we discussed" without specifying which bug, which file, which line
+- Marking a task complete without verifying the agent's work
+- Assuming an agent succeeded because it said so
 - Modifying files while an agent is running on the same repo
-- Skipping fmt/clippy/test "because the change is small"
-- Continuing a loop or taking further actions after dispatching a background agent instead of yielding to the user
+- Skipping validation "because the change is small"
+- Continuing a loop after dispatching a background agent instead of yielding to the user
